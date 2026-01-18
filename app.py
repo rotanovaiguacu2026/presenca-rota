@@ -1,4 +1,6 @@
 import streamlit as st
+st.write(st.secrets)
+import streamlit as st
 import gspread
 from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
