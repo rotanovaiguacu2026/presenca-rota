@@ -874,4 +874,4 @@ try:
     )
 
 except Exception as e:
-    st.exception(e)
+    st.error(f"⚠️ Erro: {e}")
