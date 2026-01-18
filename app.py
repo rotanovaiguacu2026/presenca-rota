@@ -11,11 +11,6 @@ import time as time_module
 import random
 import re
 
-# ===== EMAIL =====
-import smtplib
-from email.message import EmailMessage
-
-
 # ==========================================================
 # CONFIGURAÇÃO DE ACESSO
 # ==========================================================
@@ -24,7 +19,7 @@ scope = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-SPREADSHEET_ID = "14g2pklsEqiQGFZdUzehZwEvSFZnFl3HoAIEVdGUgghg"
+SPREADSHEET_NAME = "ListaPresenca"
 WS_USUARIOS = "Usuarios"
 WS_CONFIG = "Config"
 
@@ -34,58 +29,6 @@ FUSO_BR = pytz.timezone("America/Sao_Paulo")
 # GIF NO FINAL DA PÁGINA (alteração solicitada)
 # ==========================================================
 GIF_URL = "https://www.imagensanimadas.com/data/media/425/onibus-imagem-animada-0024.gif"
-
-
-# ==========================================================
-# EMAIL (GMAIL SENHA DE APP) - via st.secrets
-# ==========================================================
-def _get_email_cfg():
-    """
-    Esperado no secrets:
-    [email]
-    smtp_host = "smtp.gmail.com"
-    smtp_port = 587
-    from_addr = "..."
-    app_password = "..."
-    admin_to = "..." (opcional)
-    """
-    if "email" not in st.secrets:
-        return None
-    cfg = st.secrets["email"]
-    host = cfg.get("smtp_host", "smtp.gmail.com")
-    port = int(cfg.get("smtp_port", 587))
-    from_addr = cfg.get("from_addr", "")
-    app_pass = cfg.get("app_password", "")
-    admin_to = cfg.get("admin_to", "")
-    if not from_addr or not app_pass:
-        return None
-    return {"host": host, "port": port, "from": from_addr, "pass": app_pass, "admin_to": admin_to}
-
-
-def enviar_email(destinatario: str, assunto: str, corpo: str) -> (bool, str):
-    cfg = _get_email_cfg()
-    if not cfg:
-        return False, "Config de e-mail não encontrada no st.secrets['email']."
-
-    to_addr = str(destinatario or "").strip()
-    if not to_addr:
-        return False, "Destinatário vazio."
-
-    msg = EmailMessage()
-    msg["Subject"] = assunto
-    msg["From"] = cfg["from"]
-    msg["To"] = to_addr
-    msg.set_content(corpo)
-
-    try:
-        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=20) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(cfg["from"], cfg["pass"])
-            server.send_message(msg)
-        return True, "E-mail enviado."
-    except Exception as e:
-        return False, f"Falha ao enviar e-mail: {e}"
 
 
 # ==========================================================
@@ -147,17 +90,14 @@ def gs_call(func, *args, **kwargs):
 # ==========================================================
 @st.cache_resource
 def conectar_gsheets():
-    info = dict(st.secrets["gcp_service_account"])
-    # Correção para leitura de chaves privadas em sistemas cloud
-    if "private_key" in info:
-        info["private_key"] = info["private_key"].replace("\\n", "\n")
+    info = st.secrets["gcp_service_account"]
     creds = Credentials.from_service_account_info(info, scopes=scope)
     return gspread.authorize(creds)
 
 @st.cache_resource
 def abrir_documento():
     client = conectar_gsheets()
-    return gs_call(client.open_by_key, SPREADSHEET_ID)
+    return gs_call(client.open, SPREADSHEET_NAME)
 
 @st.cache_resource
 def ws_usuarios():
@@ -194,7 +134,7 @@ def buscar_usuarios_cadastrados():
 
 @st.cache_data(ttl=3)
 def buscar_usuarios_admin():
-    """Uso específico do ADM: Atualiza tudo."""
+    """Uso específico do ADM: mais fresco."""
     try:
         sheet_u = ws_usuarios()
         return gs_call(sheet_u.get_all_records)
@@ -277,7 +217,11 @@ def verificar_status_e_limpar(sheet_p, dados_p):
 
     is_aberto = False
 
-    # Regras de abertura/fechamento
+    # Regras de abertura/fechamento:
+    # - SEG a QUI: fecha apenas nas janelas 05:00-07:00 e 17:00-19:00
+    # - SEX: fecha às 17:00 e só reabre DOM às 19:00 (portanto SEX após 17:00 fica fechado)
+    # - SÁB: fechado o dia todo
+    # - DOM: abre a partir de 19:00
     if dia_semana == 5:  # Sábado
         is_aberto = False
     elif dia_semana == 6:  # Domingo
@@ -303,13 +247,28 @@ def verificar_status_e_limpar(sheet_p, dados_p):
 # CICLO (exibição abaixo do título)
 # ==========================================================
 def obter_ciclo_atual():
+    """
+    Regras do ciclo (texto informativo):
+    - SEG a QUI:
+        * Se agora >= 19:00 -> inscrições são para 06:30 de amanhã
+        * Se agora < 07:00  -> inscrições são para 06:30 de hoje
+        * Se 07:00 <= agora < 19:00 -> inscrições são para 18:30 de hoje
+    - SEX:
+        * Até 16:59 segue regra normal acima
+        * A partir de 17:00 fecha e o próximo ciclo será 06:30 de SEGUNDA
+    - SÁB: fechado; próximo ciclo será 06:30 de SEGUNDA
+    - DOM:
+        * Antes de 19:00 fechado; próximo ciclo será 06:30 de SEGUNDA
+        * A partir de 19:00 aberto; inscrições são para 06:30 de amanhã (SEGUNDA)
+    """
     agora = datetime.now(FUSO_BR)
     t = agora.time()
     wd = agora.weekday()
 
     em_fechamento_fds = (wd == 4 and t >= time(17, 0)) or (wd == 5) or (wd == 6 and t < time(19, 0))
     if em_fechamento_fds:
-        dias_para_seg = (7 - wd) % 7
+        # Próximo ciclo: 06:30 da próxima segunda-feira
+        dias_para_seg = (7 - wd) % 7  # sex->3, sáb->2, dom->1
         alvo_dt = (agora + timedelta(days=dias_para_seg)).date()
         alvo_h = "06:30"
     else:
@@ -331,18 +290,22 @@ def aplicar_ordenacao(df):
     if "EMAIL" not in df.columns:
         df["EMAIL"] = "N/A"
 
+    # Garantia: coluna QG_RMCF_OUTROS deve existir na planilha de presença
     if "QG_RMCF_OUTROS" not in df.columns and "ORIGEM" in df.columns:
         df["QG_RMCF_OUTROS"] = df["ORIGEM"]
     if "QG_RMCF_OUTROS" not in df.columns:
         df["QG_RMCF_OUTROS"] = ""
 
+    # Prioridades
     p_orig = {"QG": 1, "RMCF": 2, "OUTROS": 3}
 
+    # Ordem solicitada (grupo "normal")
     p_grad_normal = {
         "TCEL": 1, "MAJ": 2, "CAP": 3, "1º TEN": 4, "2º TEN": 5, "SUBTEN": 6,
         "1º SGT": 7, "2º SGT": 8, "3º SGT": 9, "CB": 10, "SD": 11
     }
 
+    # Grupo FC: primeiro FC COM (grupo 1), depois FC TER (grupo 2)
     def grupo_fc(grad):
         g = str(grad or "").strip().upper()
         if g == "FC COM":
@@ -352,17 +315,24 @@ def aplicar_ordenacao(df):
         return 0
 
     df["grupo_fc"] = df["GRADUAÇÃO"].apply(grupo_fc)
+
+    # Origem sempre: QG -> RMCF -> OUTROS (dentro de cada grupo)
     df["p_o"] = df["QG_RMCF_OUTROS"].map(p_orig).fillna(99)
 
+    # Para o grupo normal, aplica ordem de graduação; para FC, deixa 0 (desempate por dt)
     def p_grad(row):
         if int(row.get("grupo_fc", 0)) == 0:
             return p_grad_normal.get(str(row.get("GRADUAÇÃO", "")).strip().upper(), 999)
         return 0
 
     df["p_g"] = df.apply(p_grad, axis=1)
+
+    # Desempate por quem entrou primeiro
     df["dt"] = pd.to_datetime(df["DATA_HORA"], dayfirst=True, errors="coerce")
 
+    # Ordenação final conforme regra
     df = df.sort_values(by=["grupo_fc", "p_o", "p_g", "dt"]).reset_index(drop=True)
+
     df.insert(0, "Nº", [str(i + 1) if i < 38 else f"Exc-{i - 37:02d}" for i in range(len(df))])
 
     df_v = df.copy()
@@ -412,6 +382,7 @@ def gerar_pdf_apresentado(df_o: pd.DataFrame, resumo: dict) -> bytes:
     pdf = PDFRelatorio(titulo="ROTA NOVA IGUAÇU - LISTA DE PRESENÇA", sub=sub)
     pdf.add_page()
 
+    # Bloco resumo
     pdf.set_font("Arial", "B", 10)
     pdf.set_fill_color(240, 240, 240)
     pdf.cell(0, 8, "RESUMO", ln=True, fill=True)
@@ -425,6 +396,7 @@ def gerar_pdf_apresentado(df_o: pd.DataFrame, resumo: dict) -> bytes:
     pdf.cell(0, 6, f"Inscritos: {insc} | Vagas: {vagas} | Sobra: {sobra} | Excedentes: {exc}", ln=True)
     pdf.ln(2)
 
+    # Tabela com ORIGEM no final (direita)
     headers = ["Nº", "GRADUAÇÃO", "NOME", "LOTAÇÃO", "ORIGEM"]
     col_w = [12, 26, 78, 55, 19]
 
@@ -488,6 +460,7 @@ st.markdown("""
 
 st.markdown('<div class="titulo-container"><div class="titulo-responsivo">🚌 ROTA NOVA IGUAÇU 🚌</div></div>', unsafe_allow_html=True)
 
+# Exibe o ciclo logo abaixo do título
 ciclo_h, ciclo_d = obter_ciclo_atual()
 st.markdown(f"<div class='subtitulo-ciclo'>Ciclo atual: <b>EMBARQUE {ciclo_h}h</b> do dia <b>{ciclo_d}</b></div>", unsafe_allow_html=True)
 
@@ -508,10 +481,14 @@ if "_tel_cad_fmt" not in st.session_state:
 
 
 try:
+    # Leitura leve pro público
     records_u_public = buscar_usuarios_cadastrados()
     limite_max = buscar_limite_dinamico()
     sheet_u_escrita = ws_usuarios()
 
+    # =========================================
+    # LOGIN / CADASTRO / INSTRUÇÕES / RECUPERAR / ADM
+    # =========================================
     if st.session_state.usuario_logado is None and not st.session_state.is_admin:
         t1, t2, t3, t4, t5 = st.tabs(["Login", "Cadastro", "Instruções", "Recuperar", "ADM"])
 
@@ -570,6 +547,10 @@ try:
 
                     cadastrou = st.form_submit_button("✍️ SALVAR CADASTRO 👈", use_container_width=True)
                     if cadastrou:
+                        # ==========================================================
+                        # OBRIGATÓRIO: todos os campos do CADASTRO
+                        # (alteração solicitada)
+                        # ==========================================================
                         def norm_str(x):
                             return str(x or "").strip()
 
@@ -580,6 +561,7 @@ try:
                         n_g_ok = bool(norm_str(n_g))
                         n_o_ok = bool(norm_str(n_o))
 
+                        # e-mail básico
                         email_ok = bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", norm_str(n_e)))
 
                         missing = []
@@ -595,6 +577,10 @@ try:
                         if missing:
                             st.error("Preencha corretamente todos os campos: " + ", ".join(missing) + ".")
                         else:
+                            # ==========================================================
+                            # BLOQUEAR CADASTRO SE EMAIL OU TELEFONE JÁ EXISTIREM
+                            # (alteração solicitada)
+                            # ==========================================================
                             novo_email = norm_str(n_e).lower()
                             novo_tel_digits = tel_only_digits(fmt_tel_cad)
 
@@ -618,21 +604,6 @@ try:
                                     fmt_tel_cad,
                                     "PENDENTE"
                                 ])
-
-                                cfg = _get_email_cfg()
-                                if cfg and cfg.get("admin_to"):
-                                    assunto = "Novo cadastro pendente - Rota Nova Iguaçu"
-                                    corpo = (
-                                        "Novo cadastro realizado e aguardando aprovação:\n\n"
-                                        f"Nome: {norm_str(n_n)}\n"
-                                        f"E-mail: {norm_str(n_e)}\n"
-                                        f"Telefone: {fmt_tel_cad}\n"
-                                        f"Graduação: {norm_str(n_g)}\n"
-                                        f"Lotação: {norm_str(n_l)}\n"
-                                        f"Origem: {norm_str(n_o)}\n"
-                                    )
-                                    enviar_email(cfg["admin_to"], assunto, corpo)
-
                                 buscar_usuarios_cadastrados.clear()
                                 buscar_usuarios_admin.clear()
                                 st.success("Cadastro realizado! Aguardando aprovação do Administrador.")
@@ -653,34 +624,19 @@ try:
             * **Manhã:** Inscrições abertas até às 05:00h. Reabre às 07:00h.
             * **Tarde:** Inscrições abertas até às 17:00h. Reabre às 19:00h.
             * **Finais de Semana:** Abrem domingo às 19:00h.
-
+            
             **2. Observação:**
             * Nos períodos em que a lista ficar suspensa para conferência (05:00h às 07:00h / 17:00h às 19:00h), os três PPMM que estiverem no topo da lista terão acesso à lista de check up (botão no topo da lista) para tirar a falta de quem estará entrando no ônibus. O mais antigo assume e na ausência dele o seu sucessor assume.
             * Após o horário de 06:50h e de 18:50h, a lista será automaticamente zerada para que o novo ciclo da lista possa ocorrer. Sendo assim, caso queira manter um histórico de viagem, antes desses horários, faça o download do pdf e/ou do resumo do W.Zap.
             """)
 
         with t4:
-            st.markdown("### 📧 Recuperar acesso (por e-mail)")
             e_r = st.text_input("E-mail cadastrado:")
-            rec_btn = st.button("👾 ENVIAR DADOS POR E-MAIL 👾", use_container_width=True)
+            rec_btn = st.button("👾 RECUPERAR DADOS 👾", use_container_width=True)
             if rec_btn:
                 u_r = next((u for u in records_u_public if str(u.get("Email", "")).strip().lower() == e_r.strip().lower()), None)
                 if u_r:
-                    assunto = "Recuperação de acesso - Rota Nova Iguaçu"
-                    corpo = (
-                        "Você solicitou recuperação de acesso.\n\n"
-                        f"Usuário: {u_r.get('Nome')}\n"
-                        f"E-mail: {u_r.get('Email')}\n"
-                        f"Telefone: {u_r.get('TELEFONE')}\n"
-                        f"Senha: {u_r.get('Senha')}\n\n"
-                        "Se você NÃO solicitou isso, ignore este e-mail."
-                    )
-                    ok, msg = enviar_email(str(u_r.get("Email", "")).strip(), assunto, corpo)
-                    if ok:
-                        st.success("✅ Enviado para o seu e-mail cadastrado.")
-                    else:
-                        st.error(f"⚠️ Não consegui enviar: {msg}\n\n"
-                                 "Confirme se o Secrets [email] está configurado e se a Senha de App está correta.")
+                    st.info(f"Usuário: {u_r.get('Nome')} | Senha: {u_r.get('Senha')} | Tel: {u_r.get('TELEFONE')}")
                 else:
                     st.error("E-mail não encontrado.")
 
@@ -697,6 +653,9 @@ try:
                     else:
                         st.error("ADM inválido.")
 
+    # =========================================
+    # PAINEL ADM
+    # =========================================
     elif st.session_state.is_admin:
         st.header("🛡️ PAINEL ADMINISTRATIVO 🛡️")
 
@@ -719,7 +678,7 @@ try:
                 buscar_usuarios_admin.clear()
                 st.rerun()
         with cB:
-            st.caption("Atualiza tudo (3s).")
+            st.caption("ADM lê mais fresco (TTL=3s).")
 
         st.subheader("⚙️ Configurações Globais")
         novo_limite = st.number_input("Limite máximo de usuários:", value=int(limite_max))
@@ -768,6 +727,9 @@ try:
                         buscar_usuarios_cadastrados.clear()
                         st.rerun()
 
+    # =========================================
+    # USUÁRIO LOGADO
+    # =========================================
     else:
         u = st.session_state.usuario_logado
 
@@ -833,11 +795,16 @@ try:
         else:
             st.info("⌛ Lista fechada para novas inscrições.")
 
+            # ==========================================================
+            # ATUALIZAR DISPONÍVEL MESMO COM LISTA FECHADA
+            # (alteração solicitada)
+            # ==========================================================
             up_btn_fechado = st.button("🔄 ATUALIZAR", use_container_width=True)
             if up_btn_fechado:
                 buscar_presenca_atualizada.clear()
                 st.rerun()
 
+        # CONFERÊNCIA
         if ja and pos <= 3 and janela_conf:
             st.divider()
             st.subheader("📋 LISTA DE EMBARQUE 📋")
@@ -893,6 +860,10 @@ try:
 
     st.markdown('<div class="footer">Desenvolvido por: <b>MAJ ANDRÉ AGUIAR - CAES®️</b></div>', unsafe_allow_html=True)
 
+    # ==========================================================
+    # GIF NO FINAL DA PÁGINA (alteração solicitada)
+    #  - 20% menor => width:80%
+    # ==========================================================
     st.markdown(
         f"""
         <div style="width:100%; text-align:center; margin-top:12px;">
