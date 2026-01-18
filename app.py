@@ -874,4 +874,10 @@ try:
     )
 
 except Exception as e:
-    st.error(f"⚠️ Erro: {e}")
+    msg = str(e)
+
+    # Ignora respostas HTTP 200 que NÃO são erro
+    if "Response [200]" in msg:
+        pass
+    else:
+        st.error(f"⚠️ Erro: {e}")
