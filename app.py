@@ -157,7 +157,7 @@ def conectar_gsheets():
 @st.cache_resource
 def abrir_documento():
     client = conectar_gsheets()
-return gs_call(client.open_by_key, SPREADSHEET_ID)
+    return gs_call(client.open_by_key, SPREADSHEET_ID)
 
 @st.cache_resource
 def ws_usuarios():
