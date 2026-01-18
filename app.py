@@ -90,7 +90,7 @@ def gs_call(func, *args, **kwargs):
 # ==========================================================
 @st.cache_resource
 def conectar_gsheets():
-    # Utiliza os dados formatados do JSON do e-mail rotanovaiguacu2026@gmail.com
+    # Puxa os dados que configuramos nas Secrets do e-mail rotanovaiguacu2026@gmail.com
     info = st.secrets["gcp_service_account"]
     creds = Credentials.from_service_account_info(info, scopes=scope)
     return gspread.authorize(creds)
@@ -497,7 +497,6 @@ try:
             with st.form("form_login"):
                 l_e = st.text_input("E-mail:")
 
-                # telefone com “máscara” (formatar ao digitar)
                 raw_tel_login = st.text_input("Telefone:", value=st.session_state._tel_login_fmt)
                 fmt_tel_login = tel_format_br(raw_tel_login)
                 st.session_state._tel_login_fmt = fmt_tel_login
@@ -551,6 +550,7 @@ try:
                     if cadastrou:
                         # ==========================================================
                         # OBRIGATÓRIO: todos os campos do CADASTRO
+                        # (alteração solicitada)
                         # ==========================================================
                         def norm_str(x):
                             return str(x or "").strip()
@@ -578,7 +578,10 @@ try:
                         if missing:
                             st.error("Preencha corretamente todos os campos: " + ", ".join(missing) + ".")
                         else:
+                            # ==========================================================
                             # BLOQUEAR CADASTRO SE EMAIL OU TELEFONE JÁ EXISTIREM
+                            # (alteração solicitada)
+                            # ==========================================================
                             novo_email = norm_str(n_e).lower()
                             novo_tel_digits = tel_only_digits(fmt_tel_cad)
 
@@ -792,6 +795,11 @@ try:
                 st.rerun()
         else:
             st.info("⌛ Lista fechada para novas inscrições.")
+
+            # ==========================================================
+            # ATUALIZAR DISPONÍVEL MESMO COM LISTA FECHADA
+            # (alteração solicitada)
+            # ==========================================================
             up_btn_fechado = st.button("🔄 ATUALIZAR", use_container_width=True)
             if up_btn_fechado:
                 buscar_presenca_atualizada.clear()
@@ -806,7 +814,6 @@ try:
                 st.session_state.conf_ativa = not st.session_state.conf_ativa
 
             if st.session_state.conf_ativa and (dados_p_show and len(dados_p_show) > 1):
-                # Técnica para silenciar o 'Magic' do Streamlit e não gerar textos indesejados
                 for i, row in df_o.iterrows():
                     label = f"{row.get('Nº','')} - {row.get('NOME','')}".strip()
                     _ = st.checkbox(label if label else " ", key=f"chk_p_{i}")
@@ -854,6 +861,10 @@ try:
 
     st.markdown('<div class="footer">Desenvolvido por: <b>MAJ ANDRÉ AGUIAR - CAES®️</b></div>', unsafe_allow_html=True)
 
+    # ==========================================================
+    # GIF NO FINAL DA PÁGINA (alteração solicitada)
+    #  - 20% menor => width:80%
+    # ==========================================================
     st.markdown(
         f"""
         <div style="width:100%; text-align:center; margin-top:12px;">
